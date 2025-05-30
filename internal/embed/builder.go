@@ -384,23 +384,11 @@ func (b *Builder) chunkPorts(ports []monitor.NetworkPort, maxPorts int, maxLengt
 	return chunks
 }
 
-// formatAddress creates clean, readable addresses - now shows full address
+// formatAddress shows the complete, unmodified address
 func (b *Builder) formatAddress(address string) string {
-	// Keep the full address but make it more readable
-	formatted := strings.TrimSpace(address)
-
-	// Only do minimal cleanup for readability
-	replacements := map[string]string{
-		"0.0.0.0:": "*:", // Keep this as it's clearer
-		"[::]:":    "*:", // Keep this as it's clearer
-	}
-
-	for old, new := range replacements {
-		formatted = strings.ReplaceAll(formatted, old, new)
-	}
-
-	// Don't truncate - show the full address
-	return formatted
+	// Return the full address exactly as it appears in the system
+	// No replacements or modifications - show everything
+	return strings.TrimSpace(address)
 }
 
 // shortenProcessName creates readable, compact process names
