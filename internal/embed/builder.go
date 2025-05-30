@@ -138,10 +138,10 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 		}
 	}
 
-	// Constants for Discord limits - be more conservative
-	const maxPortsPerField = 8
-	const maxFieldValueLength = 800
-	const maxTotalFields = 15 // Leave more room for summary
+	// Constants for Discord limits - adjusted for full addresses
+	const maxPortsPerField = 6       // Reduced since addresses will be longer
+	const maxFieldValueLength = 1000 // Slightly increased for full addresses
+	const maxTotalFields = 12        // Reduced to prevent hitting overall embed limits
 
 	fieldCount := 0
 
@@ -355,14 +355,16 @@ func (b *Builder) chunkPorts(ports []monitor.NetworkPort, maxPorts int, maxLengt
 	currentCount := 0
 
 	for _, port := range ports {
-		// Format port entry compactly but readably
+		// Format port entry with full address and process name
 		processName := b.shortenProcessName(port.ProcessName)
 		address := b.formatAddress(port.Address)
 
+		// Use a more compact format to fit full addresses
 		portEntry := fmt.Sprintf("`%s` %s\n", address, processName)
 
 		// Check if adding this entry would exceed limits
-		if currentCount >= maxPorts || currentChunk.Len()+len(portEntry) > maxLength {
+		// Be more flexible with length to accommodate full addresses
+		if currentCount >= maxPorts || currentChunk.Len()+len(portEntry) > (maxLength+200) {
 			if currentChunk.Len() > 0 {
 				chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
 				currentChunk.Reset()
@@ -382,30 +384,22 @@ func (b *Builder) chunkPorts(ports []monitor.NetworkPort, maxPorts int, maxLengt
 	return chunks
 }
 
-// formatAddress creates clean, readable addresses
+// formatAddress creates clean, readable addresses - now shows full address
 func (b *Builder) formatAddress(address string) string {
-	// Replace verbose localhost representations
+	// Keep the full address but make it more readable
+	formatted := strings.TrimSpace(address)
+
+	// Only do minimal cleanup for readability
 	replacements := map[string]string{
-		"127.0.0.1:": "localhost:",
-		"[::1]:":     "localhost:",
-		"0.0.0.0:":   "*:",
-		"[::]:":      "*:",
+		"0.0.0.0:": "*:", // Keep this as it's clearer
+		"[::]:":    "*:", // Keep this as it's clearer
 	}
 
-	formatted := address
 	for old, new := range replacements {
 		formatted = strings.ReplaceAll(formatted, old, new)
 	}
 
-	// Handle very long addresses by showing just the port
-	if len(formatted) > 25 {
-		parts := strings.Split(formatted, ":")
-		if len(parts) >= 2 {
-			port := parts[len(parts)-1]
-			return fmt.Sprintf("...:%s", port)
-		}
-	}
-
+	// Don't truncate - show the full address
 	return formatted
 }
 
