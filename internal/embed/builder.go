@@ -114,34 +114,34 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 		},
 	}
 
+	// Debug: Show original count
+	originalCount := len(ports)
+
 	// Deduplicate and clean ports
 	uniquePorts := b.deduplicatePorts(ports)
 
-	// Sort ports by port number for better organization
-	sort.Slice(uniquePorts, func(i, j int) bool {
-		// Sort by protocol first (TCP before UDP), then by port number
-		if uniquePorts[i].Protocol != uniquePorts[j].Protocol {
-			return uniquePorts[i].Protocol == "TCP"
-		}
-		return uniquePorts[i].Port < uniquePorts[j].Port
-	})
+	// Debug info in description if we removed duplicates
+	if len(uniquePorts) != originalCount {
+		embed.Description += fmt.Sprintf(" (removed %d duplicates)", originalCount-len(uniquePorts))
+	}
 
 	// Group ports by protocol
 	tcpPorts := []monitor.NetworkPort{}
 	udpPorts := []monitor.NetworkPort{}
 
 	for _, port := range uniquePorts {
-		if port.Protocol == "TCP" {
+		switch strings.ToUpper(port.Protocol) {
+		case "TCP":
 			tcpPorts = append(tcpPorts, port)
-		} else if port.Protocol == "UDP" {
+		case "UDP":
 			udpPorts = append(udpPorts, port)
 		}
 	}
 
-	// Constants for Discord limits
-	const maxPortsPerField = 10
-	const maxFieldValueLength = 900
-	const maxTotalFields = 20 // Leave room for summary
+	// Constants for Discord limits - be more conservative
+	const maxPortsPerField = 8
+	const maxFieldValueLength = 800
+	const maxTotalFields = 15 // Leave more room for summary
 
 	fieldCount := 0
 
@@ -150,6 +150,11 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 		tcpChunks := b.chunkPorts(tcpPorts, maxPortsPerField, maxFieldValueLength)
 		for i, chunk := range tcpChunks {
 			if fieldCount >= maxTotalFields {
+				embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+					Name:   "⚠️ Truncated",
+					Value:  fmt.Sprintf("Showing %d/%d TCP ports (Discord limit)", i, len(tcpChunks)),
+					Inline: false,
+				})
 				break
 			}
 
@@ -172,6 +177,11 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 		udpChunks := b.chunkPorts(udpPorts, maxPortsPerField, maxFieldValueLength)
 		for i, chunk := range udpChunks {
 			if fieldCount >= maxTotalFields {
+				embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+					Name:   "⚠️ Truncated",
+					Value:  fmt.Sprintf("Showing %d/%d UDP ports (Discord limit)", i, len(udpChunks)),
+					Inline: false,
+				})
 				break
 			}
 
@@ -190,18 +200,13 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 	}
 
 	// Add summary with notable services
-	summaryValue := fmt.Sprintf("**Total**: %d unique | **TCP**: %d | **UDP**: %d",
-		len(uniquePorts), len(tcpPorts), len(udpPorts))
+	summaryValue := fmt.Sprintf("**Original**: %d | **Unique**: %d | **TCP**: %d | **UDP**: %d",
+		originalCount, len(uniquePorts), len(tcpPorts), len(udpPorts))
 
 	// Add notable services
 	notableServices := b.getNotableServices(uniquePorts)
 	if notableServices != "" {
 		summaryValue += fmt.Sprintf("\n\n**Services**: %s", notableServices)
-	}
-
-	// Show if truncated
-	if fieldCount >= maxTotalFields && (len(tcpPorts) > maxPortsPerField*maxTotalFields/2 || len(udpPorts) > maxPortsPerField*maxTotalFields/2) {
-		summaryValue += "\n\n⚠️ *Some ports truncated due to Discord limits*"
 	}
 
 	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
@@ -283,30 +288,60 @@ func (b *Builder) BuildAlert(level string, sensors []monitor.TemperatureSensor, 
 
 // deduplicatePorts removes duplicate entries based on protocol+address combination
 func (b *Builder) deduplicatePorts(ports []monitor.NetworkPort) []monitor.NetworkPort {
+	if len(ports) == 0 {
+		return ports
+	}
+
+	// Use a more robust key that includes port number specifically
 	seen := make(map[string]monitor.NetworkPort)
 
 	for _, port := range ports {
-		key := fmt.Sprintf("%s:%s", port.Protocol, port.Address)
+		// Create a normalized key using protocol, address, and port
+		normalizedAddr := strings.TrimSpace(port.Address)
+		normalizedProto := strings.ToUpper(strings.TrimSpace(port.Protocol))
+		normalizedPort := strings.TrimSpace(port.Port)
 
-		// Keep the entry with the best process information
-		if existing, exists := seen[key]; exists {
-			// Prefer entries with actual process names over "Unknown Process"
-			if (port.ProcessName != "" && port.ProcessName != "Unknown Process") &&
-				(existing.ProcessName == "" || existing.ProcessName == "Unknown Process") {
-				seen[key] = port
-			}
-		} else {
+		key := fmt.Sprintf("%s|%s|%s", normalizedProto, normalizedAddr, normalizedPort)
+
+		// Only keep the first occurrence - simpler logic
+		if _, exists := seen[key]; !exists {
 			seen[key] = port
 		}
 	}
 
-	// Convert back to slice
+	// Convert back to slice and sort for consistent output
 	var unique []monitor.NetworkPort
 	for _, port := range seen {
 		unique = append(unique, port)
 	}
 
+	// Sort by protocol first, then by port number
+	sort.Slice(unique, func(i, j int) bool {
+		if unique[i].Protocol != unique[j].Protocol {
+			return unique[i].Protocol == "TCP" // TCP before UDP
+		}
+
+		// Convert port strings to integers for proper numeric sorting
+		portI := b.parsePortNumber(unique[i].Port)
+		portJ := b.parsePortNumber(unique[j].Port)
+		return portI < portJ
+	})
+
 	return unique
+}
+
+// parsePortNumber safely converts port string to int for sorting
+func (b *Builder) parsePortNumber(portStr string) int {
+	// Handle cases where port might have extra characters
+	portStr = strings.TrimSpace(portStr)
+
+	// Try to parse the port number
+	var portNum int
+	if _, err := fmt.Sscanf(portStr, "%d", &portNum); err != nil {
+		return 99999 // Put unparseable ports at the end
+	}
+
+	return portNum
 }
 
 // chunkPorts splits ports into chunks that fit Discord field limits
@@ -455,7 +490,7 @@ func (b *Builder) shortenProcessName(processName string) string {
 func (b *Builder) getNotableServices(ports []monitor.NetworkPort) string {
 	wellKnownPorts := map[string]string{
 		"22":    "SSH",
-		"80":    "Nginx",
+		"80":    "HTTP",
 		"443":   "HTTPS",
 		"3306":  "MySQL",
 		"5432":  "PostgreSQL",
