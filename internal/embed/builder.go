@@ -2,6 +2,7 @@ package embed
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"system-monitor-bot/internal/monitor"
 	"time"
@@ -99,7 +100,7 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 	title := "🔌 Network Ports"
 	description := "Showing listening ports"
 	if showAll {
-		title = "All Network Connections"
+		title = "🌐 All Network Connections"
 		description = "Showing all active connections and listening ports"
 	}
 
@@ -113,28 +114,48 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 		},
 	}
 
+	// Deduplicate and clean ports
+	uniquePorts := b.deduplicatePorts(ports)
+
+	// Sort ports by port number for better organization
+	sort.Slice(uniquePorts, func(i, j int) bool {
+		// Sort by protocol first (TCP before UDP), then by port number
+		if uniquePorts[i].Protocol != uniquePorts[j].Protocol {
+			return uniquePorts[i].Protocol == "TCP"
+		}
+		return uniquePorts[i].Port < uniquePorts[j].Port
+	})
+
 	// Group ports by protocol
 	tcpPorts := []monitor.NetworkPort{}
 	udpPorts := []monitor.NetworkPort{}
 
-	for _, port := range ports {
-		switch port.Protocol {
-		case "TCP":
+	for _, port := range uniquePorts {
+		if port.Protocol == "TCP" {
 			tcpPorts = append(tcpPorts, port)
-		case "UDP":
+		} else if port.Protocol == "UDP" {
 			udpPorts = append(udpPorts, port)
 		}
 	}
 
-	const maxPortsPerField = 15
-	const maxFieldValueLength = 900 // Leave buffer under 1024 limit
+	// Constants for Discord limits
+	const maxPortsPerField = 10
+	const maxFieldValueLength = 900
+	const maxTotalFields = 20 // Leave room for summary
 
-	if len(tcpPorts) > 0 {
+	fieldCount := 0
+
+	// Add TCP ports section with pagination
+	if len(tcpPorts) > 0 && fieldCount < maxTotalFields {
 		tcpChunks := b.chunkPorts(tcpPorts, maxPortsPerField, maxFieldValueLength)
 		for i, chunk := range tcpChunks {
-			fieldName := fmt.Sprintf("TCP Ports (%d)", len(tcpPorts))
+			if fieldCount >= maxTotalFields {
+				break
+			}
+
+			fieldName := fmt.Sprintf("🔵 TCP (%d total)", len(tcpPorts))
 			if len(tcpChunks) > 1 {
-				fieldName = fmt.Sprintf("TCP Ports (%d/%d)", i+1, len(tcpChunks))
+				fieldName = fmt.Sprintf("🔵 TCP - Page %d/%d", i+1, len(tcpChunks))
 			}
 
 			embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
@@ -142,16 +163,21 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 				Value:  chunk,
 				Inline: false,
 			})
+			fieldCount++
 		}
 	}
 
-	// Add UDP ports section with chunking
-	if len(udpPorts) > 0 {
+	// Add UDP ports section with pagination
+	if len(udpPorts) > 0 && fieldCount < maxTotalFields {
 		udpChunks := b.chunkPorts(udpPorts, maxPortsPerField, maxFieldValueLength)
 		for i, chunk := range udpChunks {
-			fieldName := fmt.Sprintf("UDP Ports (%d)", len(udpPorts))
+			if fieldCount >= maxTotalFields {
+				break
+			}
+
+			fieldName := fmt.Sprintf("🟡 UDP (%d total)", len(udpPorts))
 			if len(udpChunks) > 1 {
-				fieldName = fmt.Sprintf("UDP Ports (%d/%d)", i+1, len(udpChunks))
+				fieldName = fmt.Sprintf("🟡 UDP - Page %d/%d", i+1, len(udpChunks))
 			}
 
 			embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
@@ -159,19 +185,23 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 				Value:  chunk,
 				Inline: false,
 			})
+			fieldCount++
 		}
 	}
 
-	// Add summary (always fits in one field)
-	summaryValue := fmt.Sprintf("**Total**: %d | **TCP**: %d | **UDP**: %d",
-		len(ports), len(tcpPorts), len(udpPorts))
+	// Add summary with notable services
+	summaryValue := fmt.Sprintf("**Total**: %d unique | **TCP**: %d | **UDP**: %d",
+		len(uniquePorts), len(tcpPorts), len(udpPorts))
 
-	// Add top ports by common services if space allows
-	if len(embed.Fields) < 8 { // Leave room for summary + top ports
-		topPorts := b.getTopPorts(append(tcpPorts, udpPorts...))
-		if topPorts != "" {
-			summaryValue += fmt.Sprintf("\n\n**Notable Services**:\n%s", topPorts)
-		}
+	// Add notable services
+	notableServices := b.getNotableServices(uniquePorts)
+	if notableServices != "" {
+		summaryValue += fmt.Sprintf("\n\n**Services**: %s", notableServices)
+	}
+
+	// Show if truncated
+	if fieldCount >= maxTotalFields && (len(tcpPorts) > maxPortsPerField*maxTotalFields/2 || len(udpPorts) > maxPortsPerField*maxTotalFields/2) {
+		summaryValue += "\n\n⚠️ *Some ports truncated due to Discord limits*"
 	}
 
 	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
@@ -181,119 +211,6 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 	})
 
 	return embed
-}
-
-func (b *Builder) chunkPorts(ports []monitor.NetworkPort, maxPorts int, maxLength int) []string {
-	var chunks []string
-	var currentChunk strings.Builder
-	currentCount := 0
-
-	for _, port := range ports {
-		// Format port entry more compactly
-		processName := b.shortenProcessName(port.ProcessName)
-		portEntry := fmt.Sprintf("`%s` %s\n", b.shortenAddress(port.Address), processName)
-
-		// Check if adding this entry would exceed limits
-		if currentCount >= maxPorts || currentChunk.Len()+len(portEntry) > maxLength {
-			if currentChunk.Len() > 0 {
-				chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
-				currentChunk.Reset()
-				currentCount = 0
-			}
-		}
-
-		currentChunk.WriteString(portEntry)
-		currentCount++
-	}
-
-	// Add final chunk if not empty
-	if currentChunk.Len() > 0 {
-		chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
-	}
-
-	// If no chunks created, create a truncated version
-	if len(chunks) == 0 && len(ports) > 0 {
-		chunks = append(chunks, "Too many ports to display")
-	}
-
-	return chunks
-}
-
-func (b *Builder) shortenAddress(address string) string {
-	// Replace common localhost representations
-	address = strings.ReplaceAll(address, "127.0.0.1:", "localhost:")
-	address = strings.ReplaceAll(address, "[::1]:", "localhost:")
-	address = strings.ReplaceAll(address, "0.0.0.0:", "*:")
-	address = strings.ReplaceAll(address, "[::]:", "*:")
-
-	// Limit length for very long addresses
-	if len(address) > 25 {
-		parts := strings.Split(address, ":")
-		if len(parts) >= 2 {
-			port := parts[len(parts)-1]
-			return fmt.Sprintf("...:%s", port)
-		}
-	}
-
-	return address
-}
-
-// shortenProcessName creates compact process names
-func (b *Builder) shortenProcessName(processName string) string {
-	if processName == "" {
-		return "?"
-	}
-
-	// Remove PID for space savings, keep just the main name
-	if strings.Contains(processName, "(PID:") {
-		parts := strings.Split(processName, " (PID:")
-		if len(parts) > 0 {
-			processName = parts[0]
-		}
-	}
-
-	// Truncate very long process names
-	if len(processName) > 20 {
-		return processName[:17] + "..."
-	}
-
-	return processName
-}
-
-// getTopPorts identifies notable/common services for summary
-func (b *Builder) getTopPorts(ports []monitor.NetworkPort) string {
-	wellKnownPorts := map[string]string{
-		"22":    "SSH",
-		"80":    "HTTP",
-		"443":   "HTTPS",
-		"3306":  "MySQL",
-		"5432":  "PostgreSQL",
-		"6379":  "Redis",
-		"27017": "MongoDB",
-		"8080":  "HTTP Alt",
-		"9000":  "SonarQube",
-	}
-
-	var notable []string
-	seen := make(map[string]bool)
-
-	for _, port := range ports {
-		if service, exists := wellKnownPorts[port.Port]; exists && !seen[port.Port] {
-			notable = append(notable, fmt.Sprintf("%s:%s", service, port.Port))
-			seen[port.Port] = true
-		}
-
-		// Limit to prevent summary from getting too long
-		if len(notable) >= 5 {
-			break
-		}
-	}
-
-	if len(notable) > 0 {
-		return strings.Join(notable, " • ")
-	}
-
-	return ""
 }
 
 func (b *Builder) BuildAlert(level string, sensors []monitor.TemperatureSensor, message string) *discordgo.MessageEmbed {
@@ -364,6 +281,219 @@ func (b *Builder) BuildAlert(level string, sensors []monitor.TemperatureSensor, 
 	return embed
 }
 
+// deduplicatePorts removes duplicate entries based on protocol+address combination
+func (b *Builder) deduplicatePorts(ports []monitor.NetworkPort) []monitor.NetworkPort {
+	seen := make(map[string]monitor.NetworkPort)
+
+	for _, port := range ports {
+		key := fmt.Sprintf("%s:%s", port.Protocol, port.Address)
+
+		// Keep the entry with the best process information
+		if existing, exists := seen[key]; exists {
+			// Prefer entries with actual process names over "Unknown Process"
+			if (port.ProcessName != "" && port.ProcessName != "Unknown Process") &&
+				(existing.ProcessName == "" || existing.ProcessName == "Unknown Process") {
+				seen[key] = port
+			}
+		} else {
+			seen[key] = port
+		}
+	}
+
+	// Convert back to slice
+	var unique []monitor.NetworkPort
+	for _, port := range seen {
+		unique = append(unique, port)
+	}
+
+	return unique
+}
+
+// chunkPorts splits ports into chunks that fit Discord field limits
+func (b *Builder) chunkPorts(ports []monitor.NetworkPort, maxPorts int, maxLength int) []string {
+	if len(ports) == 0 {
+		return []string{"No ports found"}
+	}
+
+	var chunks []string
+	var currentChunk strings.Builder
+	currentCount := 0
+
+	for _, port := range ports {
+		// Format port entry compactly but readably
+		processName := b.shortenProcessName(port.ProcessName)
+		address := b.formatAddress(port.Address)
+
+		portEntry := fmt.Sprintf("`%s` %s\n", address, processName)
+
+		// Check if adding this entry would exceed limits
+		if currentCount >= maxPorts || currentChunk.Len()+len(portEntry) > maxLength {
+			if currentChunk.Len() > 0 {
+				chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
+				currentChunk.Reset()
+				currentCount = 0
+			}
+		}
+
+		currentChunk.WriteString(portEntry)
+		currentCount++
+	}
+
+	// Add final chunk if not empty
+	if currentChunk.Len() > 0 {
+		chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
+	}
+
+	return chunks
+}
+
+// formatAddress creates clean, readable addresses
+func (b *Builder) formatAddress(address string) string {
+	// Replace verbose localhost representations
+	replacements := map[string]string{
+		"127.0.0.1:": "localhost:",
+		"[::1]:":     "localhost:",
+		"0.0.0.0:":   "*:",
+		"[::]:":      "*:",
+	}
+
+	formatted := address
+	for old, new := range replacements {
+		formatted = strings.ReplaceAll(formatted, old, new)
+	}
+
+	// Handle very long addresses by showing just the port
+	if len(formatted) > 25 {
+		parts := strings.Split(formatted, ":")
+		if len(parts) >= 2 {
+			port := parts[len(parts)-1]
+			return fmt.Sprintf("...:%s", port)
+		}
+	}
+
+	return formatted
+}
+
+// shortenProcessName creates readable, compact process names
+func (b *Builder) shortenProcessName(processName string) string {
+	if processName == "" || processName == "Unknown Process" {
+		return "Unknown"
+	}
+
+	// Clean up the name
+	cleaned := processName
+
+	// Remove PID information to save space
+	if strings.Contains(cleaned, " (PID:") {
+		parts := strings.Split(cleaned, " (PID:")
+		if len(parts) > 0 {
+			cleaned = parts[0]
+		}
+	}
+
+	// Map common service names to shorter versions
+	serviceAliases := map[string]string{
+		"Docker Container Port": "Docker",
+		"Docker Engine":         "Docker",
+		"Container Runtime":     "Containerd",
+		"Nginx Web Server":      "Nginx",
+		"Apache Web Server":     "Apache",
+		"Node.js Application":   "Node.js",
+		"MySQL Database":        "MySQL",
+		"PostgreSQL Database":   "PostgreSQL",
+		"Redis Cache":           "Redis",
+		"MongoDB Database":      "MongoDB",
+		"SSH Server":            "SSH",
+		"System Service":        "Systemd",
+		"DNS Resolver":          "Resolved",
+		"DHCP Client":           "DHCP",
+		"Python Application":    "Python",
+		"Java Application":      "Java",
+	}
+
+	// Check for exact matches
+	if alias, exists := serviceAliases[cleaned]; exists {
+		return alias
+	}
+
+	// Check for partial matches
+	cleanedLower := strings.ToLower(cleaned)
+	for full, alias := range serviceAliases {
+		if strings.Contains(cleanedLower, strings.ToLower(full)) {
+			return alias
+		}
+	}
+
+	// Handle common patterns
+	if strings.Contains(cleanedLower, "docker") {
+		return "Docker"
+	}
+	if strings.Contains(cleanedLower, "nginx") {
+		return "Nginx"
+	}
+	if strings.Contains(cleanedLower, "apache") || strings.Contains(cleanedLower, "httpd") {
+		return "Apache"
+	}
+
+	// Intelligent truncation - preserve meaningful parts
+	if len(cleaned) > 15 {
+		words := strings.Fields(cleaned)
+		if len(words) > 1 {
+			// Keep first word if it's descriptive and not too long
+			if len(words[0]) <= 12 && len(words[0]) > 2 {
+				return strings.Title(words[0])
+			}
+		}
+		// Fallback to simple truncation
+		return cleaned[:12] + "..."
+	}
+
+	return cleaned
+}
+
+// getNotableServices identifies well-known services for the summary
+func (b *Builder) getNotableServices(ports []monitor.NetworkPort) string {
+	wellKnownPorts := map[string]string{
+		"22":    "SSH",
+		"80":    "Nginx",
+		"443":   "HTTPS",
+		"3306":  "MySQL",
+		"5432":  "PostgreSQL",
+		"6379":  "Redis",
+		"27017": "MongoDB",
+		"8080":  "HTTP-Alt",
+		"8443":  "HTTPS-Alt",
+		"9000":  "SonarQube",
+		"5672":  "RabbitMQ",
+		"15672": "RabbitMQ-UI",
+		"1433":  "SQL Server",
+		"9200":  "Elasticsearch",
+		"9300":  "Elasticsearch",
+	}
+
+	var services []string
+	seen := make(map[string]bool)
+
+	for _, port := range ports {
+		if service, exists := wellKnownPorts[port.Port]; exists && !seen[service] {
+			services = append(services, fmt.Sprintf("%s:%s", service, port.Port))
+			seen[service] = true
+
+			// Limit to prevent summary from getting too long
+			if len(services) >= 6 {
+				break
+			}
+		}
+	}
+
+	if len(services) > 0 {
+		return strings.Join(services, " • ")
+	}
+
+	return ""
+}
+
+// Helper functions for temperature monitoring
 func (b *Builder) getTemperatureStatus(temp float64) monitor.TempStatus {
 	if temp >= b.criticalThreshold {
 		return monitor.TempCritical
