@@ -9,6 +9,8 @@ import (
 )
 
 func (sm *SystemMonitor) registerSlashCommands(s *discordgo.Session) {
+	logger.Info("Starting slash command registration...")
+
 	commands := []*discordgo.ApplicationCommand{
 		{
 			Name:        "temp",
@@ -48,92 +50,160 @@ func (sm *SystemMonitor) registerSlashCommands(s *discordgo.Session) {
 		},
 	}
 
+	logger.Info("Registering", len(commands), "slash commands")
 	guildID := sm.config.Discord.GuildID
+	logger.Info("Target guild ID:", guildID)
+
+	successCount := 0
+	errorCount := 0
+
 	for _, cmd := range commands {
+		logger.Info("Registering command:", cmd.Name)
 		_, err := s.ApplicationCommandCreate(s.State.User.ID, guildID, cmd)
 		if err != nil {
-			logger.Error("❌ Failed to register command", cmd.Name, err)
+			logger.Error("Failed to register command", cmd.Name, "error:", err)
+			errorCount++
 		} else {
-			logger.Info("✅ Successfully registered command:", cmd.Name)
+			logger.Info("Successfully registered command:", cmd.Name)
+			successCount++
 		}
 	}
+
+	logger.Info("Command registration complete. Success:", successCount, "Errors:", errorCount)
 }
 
 func (sm *SystemMonitor) handleTemperatureCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	logger.Info("Handling temperature command for user:", i.Member.User.Username)
+
+	logger.Info("Sending deferred response...")
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
+	if err != nil {
+		logger.Error("Failed to send deferred response:", err)
+		return
+	}
 
+	logger.Info("Getting temperature sensors...")
 	sensors, err := sm.tempMonitor.GetSensors()
 	if err != nil {
+		logger.Error("Failed to get temperature sensors:", err)
 		sm.sendError(s, i, "Failed to read temperature sensors", err)
 		return
 	}
 
 	if len(sensors) == 0 {
+		logger.Warn("No temperature sensors found")
 		sm.sendError(s, i, "No temperature sensors found", fmt.Errorf("ensure lm-sensors is installed and configured"))
 		return
 	}
 
+	logger.Info("Building temperature embed for", len(sensors), "sensors")
 	embed := sm.embedBuilder.BuildTemperature(sensors)
-	s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+
+	logger.Info("Sending temperature response...")
+	_, err = s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
 		Embeds: []*discordgo.MessageEmbed{embed},
 	})
+	if err != nil {
+		logger.Error("Failed to send temperature response:", err)
+	} else {
+		logger.Info("Temperature command completed successfully for user:", i.Member.User.Username)
+	}
 }
 
 func (sm *SystemMonitor) handlePortsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	logger.Info("Handling ports command for user:", i.Member.User.Username)
+
+	logger.Info("Sending deferred response...")
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
+	if err != nil {
+		logger.Error("Failed to send deferred response:", err)
+		return
+	}
 
 	showAll := false
 	if len(i.ApplicationCommandData().Options) > 0 {
 		showAll = i.ApplicationCommandData().Options[0].BoolValue()
+		logger.Info("Show all connections parameter:", showAll)
 	}
 
+	logger.Info("Getting network ports with showAll:", showAll)
 	ports, err := sm.netMonitor.GetPorts(showAll)
 	if err != nil {
+		logger.Error("Failed to get network ports:", err)
 		sm.sendError(s, i, "Failed to read network ports", err)
 		return
 	}
 
 	if len(ports) == 0 {
-		s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+		logger.Info("No network ports found")
+		_, err = s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
 			Content: "🔍 No network ports found",
 		})
+		if err != nil {
+			logger.Error("Failed to send no ports response:", err)
+		}
 		return
 	}
 
+	logger.Info("Building ports embed for", len(ports), "ports")
 	embed := sm.embedBuilder.BuildPorts(ports, showAll)
-	s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+
+	logger.Info("Sending ports response...")
+	_, err = s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
 		Embeds: []*discordgo.MessageEmbed{embed},
 	})
+	if err != nil {
+		logger.Error("Failed to send ports response:", err)
+	} else {
+		logger.Info("Ports command completed successfully for user:", i.Member.User.Username)
+	}
 }
 
 func (sm *SystemMonitor) handleAlertsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	logger.Info("Handling alerts command for user:", i.Member.User.Username)
+
 	action := i.ApplicationCommandData().Options[0].StringValue()
 	channelID := i.ChannelID
 
+	logger.Info("Alert action:", action, "for channel:", channelID)
+
 	var response string
 	if action == "enable" {
+		logger.Info("Enabling alerts for channel:", channelID)
 		sm.alertChannels[channelID] = true
 		response = fmt.Sprintf("✅ **Temperature alerts enabled** for this channel!\n\n"+
 			"🚨 Critical alerts: %.1f°C and above\n"+
 			"⚠️ Warning alerts: %.1f°C and above\n"+
 			"🔄 Check interval: %v",
 			sm.config.Thresholds.Critical, sm.config.Thresholds.Warning, sm.config.Monitor.Interval)
+		logger.Info("Alerts enabled successfully. Total alert channels:", len(sm.alertChannels))
 	} else {
+		logger.Info("Disabling alerts for channel:", channelID)
 		delete(sm.alertChannels, channelID)
 		response = "❌ **Temperature alerts disabled** for this channel."
+		logger.Info("Alerts disabled successfully. Total alert channels:", len(sm.alertChannels))
 	}
 
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	logger.Info("Sending alerts command response...")
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Content: response},
 	})
+	if err != nil {
+		logger.Error("Failed to send alerts response:", err)
+	} else {
+		logger.Info("Alerts command completed successfully for user:", i.Member.User.Username)
+	}
 }
 
 func (sm *SystemMonitor) handleStatusCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	logger.Info("Handling status command for user:", i.Member.User.Username)
+
+	logger.Info("Building status embed...")
 	embed := &discordgo.MessageEmbed{
 		Title:       "🖥️ System Monitor Status",
 		Description: "Real-time server monitoring with lm-sensors and network analysis",
@@ -167,10 +237,16 @@ func (sm *SystemMonitor) handleStatusCommand(s *discordgo.Session, i *discordgo.
 		Inline: true,
 	})
 
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	logger.Info("Sending status response...")
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Embeds: []*discordgo.MessageEmbed{embed},
 		},
 	})
+	if err != nil {
+		logger.Error("Failed to send status response:", err)
+	} else {
+		logger.Info("Status command completed successfully for user:", i.Member.User.Username)
+	}
 }

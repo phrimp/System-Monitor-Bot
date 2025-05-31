@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"system-monitor-bot/internal/monitor"
+	"system-monitor-bot/pkg/logger"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -16,6 +17,7 @@ type Builder struct {
 }
 
 func NewBuilder(critical, warning float64) *Builder {
+	logger.Info("Creating new embed Builder with thresholds - Critical:", critical, "Warning:", warning)
 	return &Builder{
 		criticalThreshold: critical,
 		warningThreshold:  warning,
@@ -23,6 +25,8 @@ func NewBuilder(critical, warning float64) *Builder {
 }
 
 func (b *Builder) BuildTemperature(sensors []monitor.TemperatureSensor) *discordgo.MessageEmbed {
+	logger.Info("Building temperature embed for", len(sensors), "sensors")
+
 	// Find maximum temperature and categorize
 	maxTemp := 0.0
 	hardwareTemps := make(map[string]float64)
@@ -40,8 +44,13 @@ func (b *Builder) BuildTemperature(sensors []monitor.TemperatureSensor) *discord
 		}
 	}
 
+	logger.Info("Maximum temperature found:", maxTemp, "°C")
+	logger.Info("Hardware categories found:", len(hardwareTemps))
+
 	// Determine overall status
 	overallStatus := b.getTemperatureStatus(maxTemp)
+	logger.Info("Overall temperature status:", overallStatus)
+
 	embed := &discordgo.MessageEmbed{
 		Title:     "🖥️ System Hardware Temperatures",
 		Color:     b.getStatusColor(overallStatus),
@@ -52,6 +61,7 @@ func (b *Builder) BuildTemperature(sensors []monitor.TemperatureSensor) *discord
 	}
 
 	// Build hardware overview
+	logger.Info("Building hardware overview...")
 	hardwareSummary := ""
 	categories := []string{
 		monitor.CategoryCPU, monitor.CategoryGPU, monitor.CategoryMotherboard,
@@ -59,14 +69,18 @@ func (b *Builder) BuildTemperature(sensors []monitor.TemperatureSensor) *discord
 		monitor.CategorySystem, monitor.CategoryOther,
 	}
 
+	categoriesFound := 0
 	for _, category := range categories {
 		if temp, exists := hardwareTemps[category]; exists {
 			status := hardwareStatus[category]
 			icon := b.getStatusIcon(status)
 			hardwareSummary += fmt.Sprintf("%s **%s**: %.1f°C  ", icon, category, temp)
+			categoriesFound++
 		}
 	}
 	hardwareSummary += fmt.Sprintf("**Max**: %.1f°C", maxTemp)
+
+	logger.Info("Hardware overview includes", categoriesFound, "categories")
 
 	// Add hardware overview field
 	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
@@ -76,8 +90,11 @@ func (b *Builder) BuildTemperature(sensors []monitor.TemperatureSensor) *discord
 	})
 
 	// Add individual sensor readings
+	logger.Info("Adding individual sensor fields...")
+	sensorsAdded := 0
 	for _, sensor := range sensors {
 		if len(embed.Fields) >= 25 { // Discord limit
+			logger.Info("Reached Discord field limit (25), adding truncation notice")
 			embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
 				Name:   "...",
 				Value:  fmt.Sprintf("And %d more sensors", len(sensors)-(len(embed.Fields)-1)),
@@ -91,12 +108,16 @@ func (b *Builder) BuildTemperature(sensors []monitor.TemperatureSensor) *discord
 			Value:  fmt.Sprintf("%.1f°C", sensor.Temperature),
 			Inline: true,
 		})
+		sensorsAdded++
 	}
 
+	logger.Info("Temperature embed built successfully with", sensorsAdded, "sensor fields")
 	return embed
 }
 
 func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discordgo.MessageEmbed {
+	logger.Info("Building ports embed for", len(ports), "ports, showAll:", showAll)
+
 	title := "🔌 Network Ports"
 	description := "Showing listening ports"
 	if showAll {
@@ -116,9 +137,12 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 
 	// Debug: Show original count
 	originalCount := len(ports)
+	logger.Info("Original port count:", originalCount)
 
 	// Deduplicate and clean ports
+	logger.Info("Deduplicating ports...")
 	uniquePorts := b.deduplicatePorts(ports)
+	logger.Info("After deduplication:", len(uniquePorts), "ports")
 
 	// Debug info in description if we removed duplicates
 	if len(uniquePorts) != originalCount {
@@ -126,6 +150,7 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 	}
 
 	// Group ports by protocol
+	logger.Info("Grouping ports by protocol...")
 	tcpPorts := []monitor.NetworkPort{}
 	udpPorts := []monitor.NetworkPort{}
 
@@ -138,6 +163,8 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 		}
 	}
 
+	logger.Info("Protocol distribution - TCP:", len(tcpPorts), "UDP:", len(udpPorts))
+
 	// Constants for Discord limits - adjusted for full addresses
 	const maxPortsPerField = 6       // Reduced since addresses will be longer
 	const maxFieldValueLength = 1000 // Slightly increased for full addresses
@@ -147,9 +174,13 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 
 	// Add TCP ports section with pagination
 	if len(tcpPorts) > 0 && fieldCount < maxTotalFields {
+		logger.Info("Processing TCP ports...")
 		tcpChunks := b.chunkPorts(tcpPorts, maxPortsPerField, maxFieldValueLength)
+		logger.Info("TCP ports split into", len(tcpChunks), "chunks")
+
 		for i, chunk := range tcpChunks {
 			if fieldCount >= maxTotalFields {
+				logger.Info("Reached field limit, adding TCP truncation notice")
 				embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
 					Name:   "⚠️ Truncated",
 					Value:  fmt.Sprintf("Showing %d/%d TCP ports (Discord limit)", i, len(tcpChunks)),
@@ -174,9 +205,13 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 
 	// Add UDP ports section with pagination
 	if len(udpPorts) > 0 && fieldCount < maxTotalFields {
+		logger.Info("Processing UDP ports...")
 		udpChunks := b.chunkPorts(udpPorts, maxPortsPerField, maxFieldValueLength)
+		logger.Info("UDP ports split into", len(udpChunks), "chunks")
+
 		for i, chunk := range udpChunks {
 			if fieldCount >= maxTotalFields {
+				logger.Info("Reached field limit, adding UDP truncation notice")
 				embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
 					Name:   "⚠️ Truncated",
 					Value:  fmt.Sprintf("Showing %d/%d UDP ports (Discord limit)", i, len(udpChunks)),
@@ -200,6 +235,7 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 	}
 
 	// Add summary with notable services
+	logger.Info("Building summary section...")
 	summaryValue := fmt.Sprintf("**Original**: %d | **Unique**: %d | **TCP**: %d | **UDP**: %d",
 		originalCount, len(uniquePorts), len(tcpPorts), len(udpPorts))
 
@@ -207,6 +243,7 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 	notableServices := b.getNotableServices(uniquePorts)
 	if notableServices != "" {
 		summaryValue += fmt.Sprintf("\n\n**Services**: %s", notableServices)
+		logger.Info("Notable services found:", notableServices)
 	}
 
 	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
@@ -215,10 +252,13 @@ func (b *Builder) BuildPorts(ports []monitor.NetworkPort, showAll bool) *discord
 		Inline: false,
 	})
 
+	logger.Info("Ports embed built successfully with", fieldCount+1, "total fields")
 	return embed
 }
 
 func (b *Builder) BuildAlert(level string, sensors []monitor.TemperatureSensor, message string) *discordgo.MessageEmbed {
+	logger.Info("Building alert embed - Level:", level, "Sensors:", len(sensors))
+
 	// Find max temperature for color
 	maxTemp := 0.0
 	for _, sensor := range sensors {
@@ -226,6 +266,7 @@ func (b *Builder) BuildAlert(level string, sensors []monitor.TemperatureSensor, 
 			maxTemp = sensor.Temperature
 		}
 	}
+	logger.Info("Alert max temperature:", maxTemp, "°C")
 
 	embed := &discordgo.MessageEmbed{
 		Title:       fmt.Sprintf("%s Temperature Alert", level),
@@ -238,12 +279,16 @@ func (b *Builder) BuildAlert(level string, sensors []monitor.TemperatureSensor, 
 	}
 
 	// Add critical and warning sensors
+	logger.Info("Processing sensors for alert...")
 	alertSensors := ""
 	normalSensors := ""
 	sensorCount := 0
+	alertSensorCount := 0
+	normalSensorCount := 0
 
 	for _, sensor := range sensors {
 		if sensorCount >= 15 { // Limit for alert embeds
+			logger.Info("Reached sensor limit for alert embed")
 			break
 		}
 
@@ -252,11 +297,15 @@ func (b *Builder) BuildAlert(level string, sensors []monitor.TemperatureSensor, 
 
 		if sensor.Status == monitor.TempCritical || sensor.Status == monitor.TempWarning {
 			alertSensors += sensorInfo
+			alertSensorCount++
 		} else {
 			normalSensors += sensorInfo
+			normalSensorCount++
 		}
 		sensorCount++
 	}
+
+	logger.Info("Alert sensors breakdown - Alert/Warning:", alertSensorCount, "Normal:", normalSensorCount)
 
 	// Add alert sensors first
 	if alertSensors != "" {
@@ -283,17 +332,21 @@ func (b *Builder) BuildAlert(level string, sensors []monitor.TemperatureSensor, 
 		Inline: true,
 	})
 
+	logger.Info("Alert embed built successfully with", len(embed.Fields), "fields")
 	return embed
 }
 
 // deduplicatePorts removes duplicate entries based on protocol+address combination
 func (b *Builder) deduplicatePorts(ports []monitor.NetworkPort) []monitor.NetworkPort {
+	logger.Info("Starting port deduplication for", len(ports), "ports")
+
 	if len(ports) == 0 {
 		return ports
 	}
 
 	// Use a more robust key that includes port number specifically
 	seen := make(map[string]monitor.NetworkPort)
+	duplicatesFound := 0
 
 	for _, port := range ports {
 		// Create a normalized key using protocol, address, and port
@@ -306,8 +359,12 @@ func (b *Builder) deduplicatePorts(ports []monitor.NetworkPort) []monitor.Networ
 		// Only keep the first occurrence - simpler logic
 		if _, exists := seen[key]; !exists {
 			seen[key] = port
+		} else {
+			duplicatesFound++
 		}
 	}
+
+	logger.Info("Deduplication found", duplicatesFound, "duplicates")
 
 	// Convert back to slice and sort for consistent output
 	var unique []monitor.NetworkPort
@@ -316,6 +373,7 @@ func (b *Builder) deduplicatePorts(ports []monitor.NetworkPort) []monitor.Networ
 	}
 
 	// Sort by protocol first, then by port number
+	logger.Info("Sorting", len(unique), "unique ports")
 	sort.Slice(unique, func(i, j int) bool {
 		if unique[i].Protocol != unique[j].Protocol {
 			return unique[i].Protocol == "TCP" // TCP before UDP
@@ -327,6 +385,7 @@ func (b *Builder) deduplicatePorts(ports []monitor.NetworkPort) []monitor.Networ
 		return portI < portJ
 	})
 
+	logger.Info("Port deduplication complete. Unique ports:", len(unique))
 	return unique
 }
 
@@ -338,6 +397,7 @@ func (b *Builder) parsePortNumber(portStr string) int {
 	// Try to parse the port number
 	var portNum int
 	if _, err := fmt.Sscanf(portStr, "%d", &portNum); err != nil {
+		logger.Info("Could not parse port number:", portStr, "- placing at end")
 		return 99999 // Put unparseable ports at the end
 	}
 
@@ -346,6 +406,8 @@ func (b *Builder) parsePortNumber(portStr string) int {
 
 // chunkPorts splits ports into chunks that fit Discord field limits
 func (b *Builder) chunkPorts(ports []monitor.NetworkPort, maxPorts int, maxLength int) []string {
+	logger.Info("Chunking", len(ports), "ports with maxPorts:", maxPorts, "maxLength:", maxLength)
+
 	if len(ports) == 0 {
 		return []string{"No ports found"}
 	}
@@ -353,8 +415,9 @@ func (b *Builder) chunkPorts(ports []monitor.NetworkPort, maxPorts int, maxLengt
 	var chunks []string
 	var currentChunk strings.Builder
 	currentCount := 0
+	chunkNumber := 0
 
-	for _, port := range ports {
+	for i, port := range ports {
 		// Format port entry with full address and process name
 		processName := b.shortenProcessName(port.ProcessName)
 		address := b.formatAddress(port.Address)
@@ -367,6 +430,8 @@ func (b *Builder) chunkPorts(ports []monitor.NetworkPort, maxPorts int, maxLengt
 		if currentCount >= maxPorts || currentChunk.Len()+len(portEntry) > (maxLength+200) {
 			if currentChunk.Len() > 0 {
 				chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
+				chunkNumber++
+				logger.Info("Created chunk", chunkNumber, "with", currentCount, "ports, length:", currentChunk.Len())
 				currentChunk.Reset()
 				currentCount = 0
 			}
@@ -374,13 +439,20 @@ func (b *Builder) chunkPorts(ports []monitor.NetworkPort, maxPorts int, maxLengt
 
 		currentChunk.WriteString(portEntry)
 		currentCount++
+
+		if i == len(ports)-1 { // Last port
+			logger.Info("Processing final port in chunk")
+		}
 	}
 
 	// Add final chunk if not empty
 	if currentChunk.Len() > 0 {
 		chunks = append(chunks, strings.TrimSpace(currentChunk.String()))
+		chunkNumber++
+		logger.Info("Created final chunk", chunkNumber, "with", currentCount, "ports")
 	}
 
+	logger.Info("Port chunking complete. Created", len(chunks), "chunks")
 	return chunks
 }
 
@@ -470,6 +542,8 @@ func (b *Builder) shortenProcessName(processName string) string {
 
 // getNotableServices identifies well-known services for the summary
 func (b *Builder) getNotableServices(ports []monitor.NetworkPort) string {
+	logger.Info("Identifying notable services from", len(ports), "ports")
+
 	wellKnownPorts := map[string]string{
 		"22":    "SSH",
 		"80":    "HTTP",
@@ -490,21 +564,29 @@ func (b *Builder) getNotableServices(ports []monitor.NetworkPort) string {
 
 	var services []string
 	seen := make(map[string]bool)
+	foundServices := 0
 
 	for _, port := range ports {
 		if service, exists := wellKnownPorts[port.Port]; exists && !seen[service] {
 			services = append(services, fmt.Sprintf("%s:%s", service, port.Port))
 			seen[service] = true
+			foundServices++
+			logger.Info("Found notable service:", service, "on port", port.Port)
 
 			// Limit to prevent summary from getting too long
 			if len(services) >= 6 {
+				logger.Info("Reached notable services limit (6)")
 				break
 			}
 		}
 	}
 
+	logger.Info("Notable services identification complete. Found:", foundServices)
+
 	if len(services) > 0 {
-		return strings.Join(services, " • ")
+		result := strings.Join(services, " • ")
+		logger.Info("Notable services string:", result)
+		return result
 	}
 
 	return ""
