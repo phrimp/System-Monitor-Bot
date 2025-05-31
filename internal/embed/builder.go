@@ -629,11 +629,11 @@ func (b *Builder) BuildMemory(processes []monitor.ProcessMemory) *discordgo.Mess
 	logger.Info("Building memory embed for", len(processes), "processes")
 
 	embed := &discordgo.MessageEmbed{
-		Title:     "💾 Top Memory Usage",
-		Color:     0x9b59b6, // Purple color for memory
+		Title:     "💾 Top 10 Memory Usage (%MEM)", // Updated title
+		Color:     0x9b59b6,
 		Timestamp: time.Now().Format(time.RFC3339),
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: "System Memory Monitor",
+			Text: "System Memory Monitor - Sorted by %MEM column", // Updated footer
 		},
 	}
 
@@ -648,7 +648,7 @@ func (b *Builder) BuildMemory(processes []monitor.ProcessMemory) *discordgo.Mess
 		totalMemory += process.MemoryPercent
 	}
 
-	embed.Description = fmt.Sprintf("Top %d processes consuming **%.1f%%** total memory", len(processes), totalMemory)
+	embed.Description = fmt.Sprintf("Top %d processes by **%%MEM** consuming **%.1f%%** total memory", len(processes), totalMemory)
 	logger.Info("Memory embed description set with total:", totalMemory, "%")
 
 	// Add individual process fields

@@ -21,7 +21,6 @@ func NewMemoryMonitor() *MemoryMonitor {
 func (mm *MemoryMonitor) GetTopProcesses() ([]ProcessMemory, error) {
 	logger.Info("Starting memory usage reading...")
 
-	// Check if top command exists
 	logger.Info("Checking for top command availability...")
 	if _, err := exec.LookPath("top"); err != nil {
 		logger.Error("top command not found:", err)
@@ -29,7 +28,6 @@ func (mm *MemoryMonitor) GetTopProcesses() ([]ProcessMemory, error) {
 	}
 	logger.Info("top command found and available")
 
-	// Execute top command with batch mode, 1 iteration, sorted by memory
 	logger.Info("Executing top command with flags: -b -n1 -o %MEM")
 	startTime := time.Now()
 	cmd := exec.Command("top", "-b", "-n1", "-o", "%MEM")
@@ -55,22 +53,20 @@ func (mm *MemoryMonitor) GetTopProcesses() ([]ProcessMemory, error) {
 }
 
 func (mm *MemoryMonitor) parseTopOutput(output string) ([]ProcessMemory, error) {
-	logger.Info("Starting top output parsing...")
+	logger.Info("Starting top output parsing focused on %MEM column...")
 	var processes []ProcessMemory
 	lines := strings.Split(output, "\n")
 	logger.Info("Processing", len(lines), "lines from top output")
 
 	// Find the header line to understand column positions
 	headerFound := false
-	headerLine := ""
 	dataStartIndex := 0
 
 	for i, line := range lines {
 		if strings.Contains(line, "PID") && strings.Contains(line, "%MEM") && strings.Contains(line, "COMMAND") {
 			headerFound = true
-			headerLine = line
 			dataStartIndex = i + 1
-			logger.Info("Found header line at index", i, ":", headerLine)
+			logger.Info("Found header line at index", i, ":", strings.TrimSpace(line))
 			break
 		}
 	}
@@ -80,22 +76,14 @@ func (mm *MemoryMonitor) parseTopOutput(output string) ([]ProcessMemory, error) 
 		return nil, fmt.Errorf("invalid top output format - no header found")
 	}
 
-	// Parse column positions
-	pidCol := strings.Index(headerLine, "PID")
-	userCol := strings.Index(headerLine, "USER")
-	memCol := strings.Index(headerLine, "%MEM")
-	cpuCol := strings.Index(headerLine, "%CPU")
-	commandCol := strings.Index(headerLine, "COMMAND")
-
-	logger.Info("Column positions - PID:", pidCol, "USER:", userCol, "MEM:", memCol, "CPU:", cpuCol, "COMMAND:", commandCol)
-
 	processedLines := 0
 	foundProcesses := 0
 
-	// Regex for parsing process lines - more flexible approach
+	// More robust regex that matches the exact top output format
+	// Matches: PID USER PR NI VIRT RES SHR S %CPU %MEM TIME+ COMMAND
 	processRegex := regexp.MustCompile(`^\s*(\d+)\s+(\S+)\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+([\d.]+)\s+([\d.]+)\s+\S+\s+(.+)$`)
 
-	for i := dataStartIndex; i < len(lines) && foundProcesses < 15; i++ {
+	for i := dataStartIndex; i < len(lines) && foundProcesses < 15; i++ { // Get 15 to ensure we have 10 good ones
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
@@ -106,11 +94,11 @@ func (mm *MemoryMonitor) parseTopOutput(output string) ([]ProcessMemory, error) 
 		if len(matches) >= 6 {
 			pid := matches[1]
 			user := matches[2]
-			memPercent := matches[3]
-			cpuPercent := matches[4]
+			cpuPercent := matches[3]
+			memPercent := matches[4] // This is the %MEM column we want to sort by
 			command := strings.TrimSpace(matches[5])
 
-			// Parse memory percentage
+			// Parse memory percentage (this is our primary sort key)
 			memPct, err := strconv.ParseFloat(memPercent, 64)
 			if err != nil {
 				logger.Info("Could not parse memory percentage:", memPercent, "for PID:", pid)
@@ -124,7 +112,7 @@ func (mm *MemoryMonitor) parseTopOutput(output string) ([]ProcessMemory, error) 
 				cpuPct = 0.0
 			}
 
-			// Skip processes with 0% memory
+			// Skip processes with 0% memory to focus on actual memory users
 			if memPct == 0.0 {
 				continue
 			}
@@ -149,13 +137,21 @@ func (mm *MemoryMonitor) parseTopOutput(output string) ([]ProcessMemory, error) 
 	logger.Info("- Processed lines:", processedLines)
 	logger.Info("- Found processes:", foundProcesses)
 
+	// Sort by memory percentage (descending) - this ensures we get the TOP memory users
 	sort.Slice(processes, func(i, j int) bool {
 		return processes[i].MemoryPercent > processes[j].MemoryPercent
 	})
 
+	// Take top 10 by memory percentage
 	if len(processes) > 10 {
 		processes = processes[:10]
-		logger.Info("Trimmed to top 10 processes by memory usage")
+		logger.Info("Trimmed to top 10 processes by %MEM column")
+	}
+
+	// Log the final top 10 for verification
+	logger.Info("Final top 10 processes by memory:")
+	for i, p := range processes {
+		logger.Info(fmt.Sprintf("  #%d: %s - %.1f%% memory", i+1, p.Command, p.MemoryPercent))
 	}
 
 	logger.Info("Memory usage parsing complete. Final process count:", len(processes))

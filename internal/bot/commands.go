@@ -30,7 +30,7 @@ func (sm *SystemMonitor) registerSlashCommands(s *discordgo.Session) {
 		},
 		{
 			Name:        "memory",
-			Description: "Display top 10 processes by memory usage",
+			Description: "Display top 10 processes by %MEM (memory percentage)",
 		},
 		{
 			Name:        "alerts",
@@ -272,7 +272,7 @@ func (sm *SystemMonitor) handleStatusCommand(s *discordgo.Session, i *discordgo.
 
 	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
 		Name:   "💾 Memory Monitoring",
-		Value:  "**Interval**: 30s\n**Top Processes**: 10\n**Auto Updates**: Enabled",
+		Value:  "**Interval**: 5s\n**Top Processes**: 10\n**Sort By**: %MEM\n**Auto Updates**: Enabled",
 		Inline: true,
 	})
 

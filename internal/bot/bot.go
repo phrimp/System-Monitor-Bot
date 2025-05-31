@@ -108,47 +108,55 @@ func (sm *SystemMonitor) Stop() {
 
 func (sm *SystemMonitor) startMemoryMonitoring() {
 	logger.Info("Memory monitoring goroutine started")
-	logger.Info("Creating memory ticker with 30 second interval")
+	logger.Info("Creating memory ticker with 5 second interval")
 
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer func() {
 		logger.Info("Stopping memory monitoring ticker")
 		ticker.Stop()
 	}()
 
-	logger.Info("Memory monitoring started")
+	logger.Info("Memory monitoring started with 5-second intervals")
 
-	for {
-		select {
-		case <-ticker.C:
-			logger.Info("Memory monitoring cycle started")
+	// Use range over ticker channel - much cleaner!
+	for range ticker.C {
+		logger.Info("Memory monitoring cycle started (5s interval)")
 
-			processes, err := sm.memMonitor.GetTopProcesses()
-			if err != nil {
-				logger.Error("Memory monitoring failed:", err)
-				continue
+		processes, err := sm.memMonitor.GetTopProcesses()
+		if err != nil {
+			logger.Error("Memory monitoring failed:", err)
+			continue
+		}
+
+		if len(processes) == 0 {
+			logger.Warn("No processes found in this memory monitoring cycle")
+			continue
+		}
+
+		logger.Info("Processing", len(processes), "memory processes (sorted by %MEM)")
+
+		// Store the latest memory data for status commands
+		sm.lastMemoryData = processes
+
+		// Log top process for monitoring
+		if len(processes) > 0 {
+			topProcess := processes[0]
+			logger.Info("Top memory process: PID", topProcess.PID, topProcess.Command, "using", topProcess.MemoryPercent, "% memory")
+
+			// Log high memory usage warnings
+			if topProcess.MemoryPercent > 20.0 {
+				logger.Warn("Very high memory usage detected:", topProcess.Command, "using", topProcess.MemoryPercent, "% memory")
+			} else if topProcess.MemoryPercent > 10.0 {
+				logger.Warn("High memory usage detected:", topProcess.Command, "using", topProcess.MemoryPercent, "% memory")
 			}
+		}
 
-			if len(processes) == 0 {
-				logger.Warn("No processes found in this memory monitoring cycle")
-				continue
-			}
-
-			logger.Info("Processing", len(processes), "memory processes")
-
-			// Store the latest memory data for status commands
-			sm.lastMemoryData = processes
-
-			// Log top process for monitoring
-			if len(processes) > 0 {
-				topProcess := processes[0]
-				logger.Info("Top memory process:", topProcess.Command, "using", topProcess.MemoryPercent, "% memory")
-
-				// Could add memory alerts here in the future if needed
-				// For now, just log high memory usage
-				if topProcess.MemoryPercent > 50.0 {
-					logger.Warn("High memory usage detected:", topProcess.Command, "using", topProcess.MemoryPercent, "% memory")
-				}
+		// Log summary of top 5 for quick monitoring
+		if len(processes) >= 5 {
+			logger.Info("Top 5 memory processes summary:")
+			for i := 0; i < 5; i++ {
+				p := processes[i]
+				logger.Info(fmt.Sprintf("  #%d: %s (PID %s) - %.1f%%", i+1, p.Command, p.PID, p.MemoryPercent))
 			}
 		}
 	}
