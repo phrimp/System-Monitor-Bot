@@ -1,3 +1,5 @@
+// Updated internal/bot/bot.go with memory monitoring
+
 package bot
 
 import (
@@ -12,13 +14,15 @@ import (
 )
 
 type SystemMonitor struct {
-	discord       *discordgo.Session
-	config        *config.Config
-	tempMonitor   *monitor.TemperatureMonitor
-	netMonitor    *monitor.NetworkMonitor
-	embedBuilder  *embed.Builder
-	alertChannels map[string]bool
-	lastAlert     time.Time
+	discord        *discordgo.Session
+	config         *config.Config
+	tempMonitor    *monitor.TemperatureMonitor
+	netMonitor     *monitor.NetworkMonitor
+	memMonitor     *monitor.MemoryMonitor
+	embedBuilder   *embed.Builder
+	alertChannels  map[string]bool
+	lastAlert      time.Time
+	lastMemoryData []monitor.ProcessMemory
 }
 
 func New(cfg *config.Config) (*SystemMonitor, error) {
@@ -38,6 +42,9 @@ func New(cfg *config.Config) (*SystemMonitor, error) {
 	logger.Info("Initializing network monitor...")
 	netMonitor := monitor.NewNetworkMonitor()
 
+	logger.Info("Initializing memory monitor...")
+	memMonitor := monitor.NewMemoryMonitor()
+
 	logger.Info("Initializing embed builder...")
 	embedBuilder := embed.NewBuilder(cfg.Thresholds.Critical, cfg.Thresholds.Warning)
 
@@ -46,6 +53,7 @@ func New(cfg *config.Config) (*SystemMonitor, error) {
 		config:        cfg,
 		tempMonitor:   tempMonitor,
 		netMonitor:    netMonitor,
+		memMonitor:    memMonitor,
 		embedBuilder:  embedBuilder,
 		alertChannels: make(map[string]bool),
 	}
@@ -77,6 +85,9 @@ func (sm *SystemMonitor) Start() error {
 	logger.Info("Starting background temperature monitoring goroutine...")
 	go sm.startTemperatureMonitoring()
 
+	logger.Info("Starting background memory monitoring goroutine...")
+	go sm.startMemoryMonitoring()
+
 	logger.Info("SystemMonitor started successfully")
 	return nil
 }
@@ -93,6 +104,54 @@ func (sm *SystemMonitor) Stop() {
 		}
 	}
 	logger.Info("SystemMonitor stopped")
+}
+
+func (sm *SystemMonitor) startMemoryMonitoring() {
+	logger.Info("Memory monitoring goroutine started")
+	logger.Info("Creating memory ticker with 30 second interval")
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer func() {
+		logger.Info("Stopping memory monitoring ticker")
+		ticker.Stop()
+	}()
+
+	logger.Info("Memory monitoring started")
+
+	for {
+		select {
+		case <-ticker.C:
+			logger.Info("Memory monitoring cycle started")
+
+			processes, err := sm.memMonitor.GetTopProcesses()
+			if err != nil {
+				logger.Error("Memory monitoring failed:", err)
+				continue
+			}
+
+			if len(processes) == 0 {
+				logger.Warn("No processes found in this memory monitoring cycle")
+				continue
+			}
+
+			logger.Info("Processing", len(processes), "memory processes")
+
+			// Store the latest memory data for status commands
+			sm.lastMemoryData = processes
+
+			// Log top process for monitoring
+			if len(processes) > 0 {
+				topProcess := processes[0]
+				logger.Info("Top memory process:", topProcess.Command, "using", topProcess.MemoryPercent, "% memory")
+
+				// Could add memory alerts here in the future if needed
+				// For now, just log high memory usage
+				if topProcess.MemoryPercent > 50.0 {
+					logger.Warn("High memory usage detected:", topProcess.Command, "using", topProcess.MemoryPercent, "% memory")
+				}
+			}
+		}
+	}
 }
 
 func (sm *SystemMonitor) startTemperatureMonitoring() {

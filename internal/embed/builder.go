@@ -624,3 +624,77 @@ func (b *Builder) getStatusColor(status monitor.TempStatus) int {
 		return 0x00ff00 // Green
 	}
 }
+
+func (b *Builder) BuildMemory(processes []monitor.ProcessMemory) *discordgo.MessageEmbed {
+	logger.Info("Building memory embed for", len(processes), "processes")
+
+	embed := &discordgo.MessageEmbed{
+		Title:     "💾 Top Memory Usage",
+		Color:     0x9b59b6, // Purple color for memory
+		Timestamp: time.Now().Format(time.RFC3339),
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: "System Memory Monitor",
+		},
+	}
+
+	if len(processes) == 0 {
+		embed.Description = "No processes found"
+		logger.Info("No processes to display in memory embed")
+		return embed
+	}
+
+	totalMemory := 0.0
+	for _, process := range processes {
+		totalMemory += process.MemoryPercent
+	}
+
+	embed.Description = fmt.Sprintf("Top %d processes consuming **%.1f%%** total memory", len(processes), totalMemory)
+	logger.Info("Memory embed description set with total:", totalMemory, "%")
+
+	// Add individual process fields
+	logger.Info("Adding individual process fields...")
+	for i, process := range processes {
+		if i >= 10 {
+			break
+		}
+
+		var emoji string
+		if process.MemoryPercent >= 10.0 {
+			emoji = "🔴" // High usage
+		} else if process.MemoryPercent >= 5.0 {
+			emoji = "🟠" // Medium usage
+		} else if process.MemoryPercent >= 1.0 {
+			emoji = "🟡" // Low-medium usage
+		} else {
+			emoji = "🟢" // Low usage
+		}
+
+		fieldName := fmt.Sprintf("%s #%d - %s", emoji, i+1, process.Command)
+		fieldValue := fmt.Sprintf("**Memory**: %.1f%%\n**CPU**: %.1f%%\n**User**: %s\n**PID**: %s",
+			process.MemoryPercent, process.CPUPercent, process.User, process.PID)
+
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   fieldName,
+			Value:  fieldValue,
+			Inline: true,
+		})
+
+		logger.Info("Added process field:", process.Command, "Memory:", process.MemoryPercent, "%")
+	}
+
+	// Add summary field
+	if len(processes) > 0 {
+		summaryValue := fmt.Sprintf("**Highest**: %s (%.1f%%)\n**Average**: %.1f%%\n**Last Updated**: <t:%d:R>",
+			processes[0].Command, processes[0].MemoryPercent, totalMemory/float64(len(processes)), time.Now().Unix())
+
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   "📊 Summary",
+			Value:  summaryValue,
+			Inline: false,
+		})
+		logger.Info("Added summary field to memory embed")
+	}
+
+	logger.Info("Memory embed built successfully with", len(embed.Fields), "fields")
+	return embed
+}

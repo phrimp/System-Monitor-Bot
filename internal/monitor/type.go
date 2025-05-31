@@ -1,3 +1,4 @@
+// internal/monitor/type.go
 package monitor
 
 import (
@@ -80,12 +81,33 @@ func (np *NetworkPort) LogDetails() {
 	logger.Info("- PID:", np.PID)
 }
 
+// ProcessMemory represents a process's memory usage
+type ProcessMemory struct {
+	PID           string
+	User          string
+	Command       string
+	MemoryPercent float64
+	CPUPercent    float64
+}
+
+// LogDetails logs detailed information about the process memory usage
+func (pm *ProcessMemory) LogDetails() {
+	logger.Info("ProcessMemory Details:")
+	logger.Info("- PID:", pm.PID)
+	logger.Info("- User:", pm.User)
+	logger.Info("- Command:", pm.Command)
+	logger.Info("- Memory:", pm.MemoryPercent, "%")
+	logger.Info("- CPU:", pm.CPUPercent, "%")
+}
+
 // MonitorData contains system monitoring data
 type MonitorData struct {
-	Sensors   []TemperatureSensor
-	Ports     []NetworkPort
-	Timestamp time.Time
-	MaxTemp   float64
+	Sensors     []TemperatureSensor
+	Ports       []NetworkPort
+	Processes   []ProcessMemory
+	Timestamp   time.Time
+	MaxTemp     float64
+	TotalMemory float64
 }
 
 // LogSummary logs a summary of the monitoring data
@@ -94,6 +116,7 @@ func (md *MonitorData) LogSummary() {
 	logger.Info("- Timestamp:", md.Timestamp.Format("2006-01-02 15:04:05"))
 	logger.Info("- Total Sensors:", len(md.Sensors))
 	logger.Info("- Total Ports:", len(md.Ports))
+	logger.Info("- Total Processes:", len(md.Processes))
 	logger.Info("- Max Temperature:", md.MaxTemp, "°C")
 
 	if len(md.Sensors) > 0 {
@@ -134,5 +157,18 @@ func (md *MonitorData) LogSummary() {
 		logger.Info("- Port Protocol Distribution:")
 		logger.Info("  - TCP:", tcpCount)
 		logger.Info("  - UDP:", udpCount)
+	}
+
+	if len(md.Processes) > 0 {
+		totalMemUsage := 0.0
+		for _, process := range md.Processes {
+			totalMemUsage += process.MemoryPercent
+		}
+
+		logger.Info("- Memory Usage Summary:")
+		logger.Info("  - Top 5 Total Memory:", totalMemUsage, "%")
+		if len(md.Processes) > 0 {
+			logger.Info("  - Highest Process:", md.Processes[0].Command, md.Processes[0].MemoryPercent, "%")
+		}
 	}
 }

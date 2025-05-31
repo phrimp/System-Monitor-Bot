@@ -29,6 +29,10 @@ func (sm *SystemMonitor) registerSlashCommands(s *discordgo.Session) {
 			},
 		},
 		{
+			Name:        "memory",
+			Description: "Display top 10 processes by memory usage",
+		},
+		{
 			Name:        "alerts",
 			Description: "Configure temperature alerts for this channel",
 			Options: []*discordgo.ApplicationCommandOption{
@@ -163,6 +167,51 @@ func (sm *SystemMonitor) handlePortsCommand(s *discordgo.Session, i *discordgo.I
 	}
 }
 
+func (sm *SystemMonitor) handleMemoryCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	logger.Info("Handling memory command for user:", i.Member.User.Username)
+
+	logger.Info("Sending deferred response...")
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+	if err != nil {
+		logger.Error("Failed to send deferred response:", err)
+		return
+	}
+
+	logger.Info("Getting memory usage data...")
+	processes, err := sm.memMonitor.GetTopProcesses()
+	if err != nil {
+		logger.Error("Failed to get memory usage:", err)
+		sm.sendError(s, i, "Failed to read memory usage", err)
+		return
+	}
+
+	if len(processes) == 0 {
+		logger.Warn("No processes found")
+		_, err = s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+			Content: "🔍 No processes found with memory usage",
+		})
+		if err != nil {
+			logger.Error("Failed to send no processes response:", err)
+		}
+		return
+	}
+
+	logger.Info("Building memory embed for", len(processes), "processes")
+	embed := sm.embedBuilder.BuildMemory(processes)
+
+	logger.Info("Sending memory response...")
+	_, err = s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+		Embeds: []*discordgo.MessageEmbed{embed},
+	})
+	if err != nil {
+		logger.Error("Failed to send memory response:", err)
+	} else {
+		logger.Info("Memory command completed successfully for user:", i.Member.User.Username)
+	}
+}
+
 func (sm *SystemMonitor) handleAlertsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	logger.Info("Handling alerts command for user:", i.Member.User.Username)
 
@@ -206,7 +255,7 @@ func (sm *SystemMonitor) handleStatusCommand(s *discordgo.Session, i *discordgo.
 	logger.Info("Building status embed...")
 	embed := &discordgo.MessageEmbed{
 		Title:       "🖥️ System Monitor Status",
-		Description: "Real-time server monitoring with lm-sensors and network analysis",
+		Description: "Real-time server monitoring with lm-sensors, network analysis, and memory tracking",
 		Color:       0x00ff00,
 		Timestamp:   time.Now().Format(time.RFC3339),
 		Footer: &discordgo.MessageEmbedFooter{
@@ -218,6 +267,12 @@ func (sm *SystemMonitor) handleStatusCommand(s *discordgo.Session, i *discordgo.
 		Name: "🌡️ Temperature Monitoring",
 		Value: fmt.Sprintf("**Interval**: %v\n**Warning**: %.1f°C\n**Critical**: %.1f°C",
 			sm.config.Monitor.Interval, sm.config.Thresholds.Warning, sm.config.Thresholds.Critical),
+		Inline: true,
+	})
+
+	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+		Name:   "💾 Memory Monitoring",
+		Value:  "**Interval**: 30s\n**Top Processes**: 10\n**Auto Updates**: Enabled",
 		Inline: true,
 	})
 
@@ -236,6 +291,16 @@ func (sm *SystemMonitor) handleStatusCommand(s *discordgo.Session, i *discordgo.
 		Value:  lastAlert,
 		Inline: true,
 	})
+
+	// Add current memory status if available
+	if len(sm.lastMemoryData) > 0 {
+		topProcess := sm.lastMemoryData[0]
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   "🔥 Top Memory Process",
+			Value:  fmt.Sprintf("**%s**\n%.1f%% memory", topProcess.Command, topProcess.MemoryPercent),
+			Inline: true,
+		})
+	}
 
 	logger.Info("Sending status response...")
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{

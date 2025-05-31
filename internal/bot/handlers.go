@@ -1,3 +1,5 @@
+// Updated internal/bot/handlers.go with memory command support
+
 package bot
 
 import (
@@ -45,6 +47,9 @@ func (sm *SystemMonitor) onInteraction(s *discordgo.Session, i *discordgo.Intera
 	case "ports":
 		logger.Info("Processing ports command for user:", userName)
 		sm.handlePortsCommand(s, i)
+	case "memory":
+		logger.Info("Processing memory command for user:", userName)
+		sm.handleMemoryCommand(s, i)
 	case "alerts":
 		logger.Info("Processing alerts command for user:", userName)
 		sm.handleAlertsCommand(s, i)
